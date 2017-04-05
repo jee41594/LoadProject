@@ -15,7 +15,13 @@ http://poi.apache.org/apidocs/index.html  에서 API보자
 컬럼+ 로우 -> SHEET -> 파일
 Class HSSFWorkbook = EXCEL 파일!
 
+TableModel 사용하면 편집의 유무를 TableModel이 책임져야한다
+JTable(3,8) 하면 수정가능하지만
+TableModel 은 불가능!
 
+------------------------------------------------------------
+<수정>
+수정하고 enter치면 쿼리문 보내도록!
 
  */
 package oracle;
@@ -33,7 +39,10 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.util.Vector;
 
 import javax.swing.JButton;
 import javax.swing.JFileChooser;
@@ -43,6 +52,8 @@ import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JTable;
 import javax.swing.JTextField;
+import javax.swing.event.TableModelEvent;
+import javax.swing.event.TableModelListener;
 
 import org.apache.poi.hssf.usermodel.HSSFCell;
 import org.apache.poi.hssf.usermodel.HSSFRow;
@@ -50,7 +61,7 @@ import org.apache.poi.hssf.usermodel.HSSFSheet;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.ss.usermodel.DataFormatter;
 
-public class LoadMain extends JFrame implements ActionListener{
+public class LoadMain extends JFrame implements ActionListener, TableModelListener{
 	
 	JPanel p_north;
 	JTextField t_path;
@@ -65,6 +76,10 @@ public class LoadMain extends JFrame implements ActionListener{
 	 //윈도우 창이 열리면 이미 db가 접속을 확보해야 한다.
 	DBManager manager = DBManager.getInstance();
 	Connection con;
+	Vector<Vector> list;
+	Vector columnName;
+	//MyModel myModel;
+	
 	
 	public LoadMain() {
 		p_north = new JPanel();
@@ -74,6 +89,7 @@ public class LoadMain extends JFrame implements ActionListener{
 		bt_excel = new JButton("엑셀로드");
 		bt_del = new JButton("삭제하기");
 		
+		//JTable이 안나오는 이유는 현재 언제 나올지 지정x!
 		table=  new JTable();
 		scroll = new JScrollPane(table);
 		chooser = new JFileChooser("C:/animal");
@@ -103,6 +119,12 @@ public class LoadMain extends JFrame implements ActionListener{
 			}
 		});
 		
+		//TableModel과 Listener와의 연결
+		//JTable은 자기가 사용하고 있는 model반환해준다.
+		//table.getModet()하면된다.
+		//table.getModel().addTableModelListener(this);
+		//여기 시점 문제로 여기서는 안된다
+
 		setVisible(true);
 		setSize(800, 600);
 		//setDefaultCloseOperation(EXIT_ON_CLOSE);
@@ -134,9 +156,11 @@ public class LoadMain extends JFrame implements ActionListener{
 	 */
 	
 	public void loadExcel() {
-		int result = chooser.showOpenDialog(this);
-		StringBuffer sb_cell = new StringBuffer();
+		
 		String data;
+		StringBuffer sb = new StringBuffer(); 
+
+		int result = chooser.showOpenDialog(this);
 		
 		if(result==JFileChooser.APPROVE_OPTION) {
 			File file = chooser.getSelectedFile();
@@ -163,12 +187,14 @@ public class LoadMain extends JFrame implements ActionListener{
 					
 					for(int i =0; i<columnCount; i++) {
 						HSSFCell cell = row.getCell(i);
-						
 						//자료형(숫자 or 문자)에 국한되지 않고 모두 String처리해야한다. DataFormatter 사용!
 						String value = df.formatCellValue(cell);
-						System.out.print(value);
+						
+						sb.append("insert into hospital(seq,name,addr,regdate,status,dimension,type)");
+						sb.append(" values("+value[a][0]+",'"+value[a][1]+"','"+value[a][2]+"','"+value[a][3]+"','"+value[a][4]+"',"+value[a][5]+",'"+value[a][6]+"')");
+						//System.out.print(value);
 					}
-					System.out.println("");
+					//System.out.println("");
 				}
 			} catch (FileNotFoundException e) {
 				e.printStackTrace();
@@ -177,6 +203,96 @@ public class LoadMain extends JFrame implements ActionListener{
 			}
 		}	
 	}
+	
+	//모든 레코드 가져오기 -> JTable에
+	public void getList() {
+		String sql = "select*from hospital order by seq asc";
+		
+		PreparedStatement pstmt = null;
+		ResultSet rs= null;
+		try {
+			pstmt = con.prepareStatement(sql);
+			rs = pstmt.executeQuery();
+			//table은 mvc이기 때문에 model을 통해 넣어야하고 rs랑 model을 가공해야 한다.
+			//rs는 2차원 Vector로 가공해야 한다.
+			
+			ResultSetMetaData meta = rs.getMetaData(); //columnName을 받아오자 rs죽기전에
+			int count = meta.getColumnCount();
+			columnName = new Vector<>();
+			
+			//for문 돌려서 column들을 vector에 add하면 된다.
+			for(int i=0; i<count; i++){
+				columnName.add(meta.getColumnName(i+1));				
+			}
+			
+			list = new Vector<Vector>(); //큰vector로 2차원백터가 될 예정!
+			
+			while(rs.next()) {
+				Vector vec = new Vector(); //레코드 한건 담기			
+				vec.add(rs.getString("seq"));
+				vec.add(rs.getString("name"));
+				vec.add(rs.getString("addr"));
+				vec.add(rs.getString("regdate"));
+				vec.add(rs.getString("status"));
+				vec.add(rs.getString("dimension"));
+				vec.add(rs.getString("type"));	
+				
+				list.add(vec);
+			}
+			
+		} catch (SQLException e) {
+			e.printStackTrace();
+		} finally {
+			if(rs!=null) {
+				try {
+					rs.close();
+				} catch (SQLException e) {
+					e.printStackTrace();
+				}
+			}
+			
+			if(pstmt!=null) {
+				try {
+					pstmt.close();
+				} catch (SQLException e) {
+					e.printStackTrace();
+				}				
+			}
+		}
+
+	}
+ /*
+	public void getList() {
+		String sql = "select * from hospital order by sec asc";
+		PreparedStatement pstmt = null;
+		ResultSet rs = null;
+		
+		
+		try {
+			pstmt = con.prepareStatement(sql);
+			rs = pstmt.executeQuery();
+
+			while(rs.next()){
+				Vector vec = new Vector();
+				vec.add(rs.getString("seq"));
+				vec.add(rs.getString("name"));
+				vec.add(rs.getString("addr"));
+				vec.add(rs.getString("regdate"));
+				vec.add(rs.getString("status"));
+				vec.add(rs.getString("dimension"));
+				vec.add(rs.getString("type"));	
+
+				
+			}
+			
+		} catch (SQLException e) {
+			e.printStackTrace();
+		}
+		
+		
+
+		
+	}*/
 	
 	// 선택한 레코드 삭제
 	public void delete() {
@@ -271,6 +387,15 @@ public class LoadMain extends JFrame implements ActionListener{
 				}
 			} 
 			JOptionPane.showMessageDialog(this, "마이그레이션 완료!");
+			//JTable 나오게 처리!!
+			getList();
+			//다시 너 그려라
+			table.setModel(new MyModel(list, columnName));
+			//모델 적용한 다음에 getModel해줘야함
+			table.getModel().addTableModelListener(this);
+			
+			//테이블 튕겨주면서 최신 데이터 반영되도록
+			table.updateUI();	
 			
 		} catch (IOException e) {
 			e.printStackTrace();
@@ -287,9 +412,17 @@ public class LoadMain extends JFrame implements ActionListener{
 		}	
 	}
 	
+	//테이블 모델의 데이터값에 변경이 발생하면
+	//그 찰나를 감지하는 리스너!!
+	public void tableChanged(TableModelEvent e) {
+		System.out.println("테이블 건들였어");
+		//MyModel에서 변경된 시점에서 호출또해줘야한다. 안그럼안됨,,
+		//this.fireTableDataChanged();
+	}
 
 	public static void main(String[] args) {
 		new LoadMain();
 	}
+
 
 }
