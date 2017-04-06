@@ -22,6 +22,9 @@ TableModel 은 불가능!
 ------------------------------------------------------------
 <수정>
 수정하고 enter치면 쿼리문 보내도록!
+------------------------------------------------------------
+선택 파일을 구분시키는
+
 
  */
 package oracle;
@@ -29,6 +32,8 @@ package oracle;
 import java.awt.BorderLayout;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.io.BufferedReader;
@@ -61,7 +66,9 @@ import org.apache.poi.hssf.usermodel.HSSFSheet;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.ss.usermodel.DataFormatter;
 
-public class LoadMain extends JFrame implements ActionListener, TableModelListener{
+import util.file.FileUtil;
+
+public class LoadMain extends JFrame implements ActionListener, TableModelListener, Runnable{
 	
 	JPanel p_north;
 	JTextField t_path;
@@ -79,14 +86,25 @@ public class LoadMain extends JFrame implements ActionListener, TableModelListen
 	Vector<Vector> list;
 	Vector columnName;
 	//MyModel myModel;
+	Thread thread;
+	/*
+ 	엑셀 등록시 사용될 쓰레드 
+	 왜 사용?
+	 데이터 량의 너무 많을 경우, 혹은 네트워크 상태가 좋지 않을 경우
+	 insert가 while문 속도를 못따라간다.
+	 따라서 안정성을 위해 일부러 시간 지연을 일으켜 insert 시도할거임
+	 */
 	
+	//엑셀 파일에 의해 생성된 쿼리문을 쓰레드가 사용할 수 있는 상태로 저장해놓자!!
+	StringBuffer insertSql = new StringBuffer();
+	String seq;
 	
 	public LoadMain() {
 		p_north = new JPanel();
 		t_path = new JTextField(25);
 		bt_open = new JButton("파일열기");
-		bt_load = new JButton("로드하기");
-		bt_excel = new JButton("엑셀로드");
+		bt_load = new JButton("csv 로드하기");
+		bt_excel = new JButton("exl 엑셀로드");
 		bt_del = new JButton("삭제하기");
 		
 		//JTable이 안나오는 이유는 현재 언제 나올지 지정x!
@@ -107,6 +125,17 @@ public class LoadMain extends JFrame implements ActionListener, TableModelListen
 		bt_load.addActionListener(this);
 		bt_excel.addActionListener(this);
 		bt_del.addActionListener(this);
+		
+		//Listener주기엔 너무 많으니까 Adapter내부익명으로 하자!
+		table.addMouseListener(new MouseAdapter() {
+			public void mouseClicked(MouseEvent e) {
+				JTable t = (JTable)e.getSource();
+				
+				int col = 0; //seq는 첫번째 컬럼이니까 항상 0
+				int row = t.getSelectedRow();
+				seq = (String)t.getValueAt(row, col);
+			}
+		});
 		
 		//윈도우와 Listener와 연결
 		this.addWindowListener(new WindowAdapter() {
@@ -157,8 +186,8 @@ public class LoadMain extends JFrame implements ActionListener, TableModelListen
 	
 	public void loadExcel() {
 		
-		String data;
-		StringBuffer sb = new StringBuffer(); 
+		StringBuffer cols = new StringBuffer(); //컬럼 모아놓는 스트링버퍼
+		StringBuffer data = new StringBuffer(); //value들 모아놓는 스트링버퍼
 
 		int result = chooser.showOpenDialog(this);
 		
@@ -179,23 +208,74 @@ public class LoadMain extends JFrame implements ActionListener, TableModelListen
 				sheet = book.getSheet("동물병원");
 				
 				int total = sheet.getLastRowNum();
-				DataFormatter df = new DataFormatter(); //얘를 이용해 가공
+				/*
+				 첫번째 row는 데이터가 아닌 컬럼 정보이므로, 이 정보들을 추출하여
+				 insert into table(****) 이 안쪽에 넣자.
+				 */
 
+				System.out.println("이 파일의 첫번째 row 번호는"+sheet.getFirstRowNum()); 
+				//이 파일의 첫번째 row 번호는0이라 뜸
+				HSSFRow firstRow = sheet.getRow(sheet.getFirstRowNum());
+				
+				//스트링버퍼 비우기! 계속 쌓여서 많아지므로
+				cols.delete(0, cols.length());
+				
+				//Row를 얻었으니 컬럼을 분석한다.
+				//firstRow.getLastCellNum(); //마지막 cell번호 얻어오기
+				for(int i=0; i<firstRow.getLastCellNum(); i++) {
+					HSSFCell cell = firstRow.getCell(i);
+					
+					//마지막 쉼표가 찍히지 않도록 하려면 2가지 경우가 있음을 알아야 한다.
+					if(i< firstRow.getLastCellNum()-1) {
+						//System.out.print(cell.getStringCellValue()+",");
+						//System.out.print(cell+",");
+						cols.append(cell.getStringCellValue()+",");
+					} else{
+						//System.out.print(cell.getStringCellValue());
+						//StringBuffer인 cols에 모아서 쓴다. 현재는 디버깅 목적으로 sysout한거지 보관은 x 되므로! cols이용!
+						cols.append(cell.getStringCellValue());
+					} 
+				}
+				
+				DataFormatter df = new DataFormatter(); //얘를 이용해 가공
+				
 				for(int a=1; a<total; a++){
 					HSSFRow row = sheet.getRow(a);
+					
 					int columnCount = row.getLastCellNum();
+					
+					data.delete(0, data.length()); //여기도 비워주기
 					
 					for(int i =0; i<columnCount; i++) {
 						HSSFCell cell = row.getCell(i);
+						
 						//자료형(숫자 or 문자)에 국한되지 않고 모두 String처리해야한다. DataFormatter 사용!
 						String value = df.formatCellValue(cell);
-						
-						sb.append("insert into hospital(seq,name,addr,regdate,status,dimension,type)");
-						sb.append(" values("+value[a][0]+",'"+value[a][1]+"','"+value[a][2]+"','"+value[a][3]+"','"+value[a][4]+"',"+value[a][5]+",'"+value[a][6]+"')");
 						//System.out.print(value);
+						//''호따옴표가 없다.
+						if(cell.getCellType()==HSSFCell.CELL_TYPE_STRING) {
+							value="'"+value+"'";						
+						}
+						
+						//이것도 콤마 2가지 경우로 !
+						if(i<columnCount-1) {
+							data.append(value+",");
+						} else{
+							data.append(value);
+						}
 					}
-					//System.out.println("");
+					System.out.println("insert into hospital("+cols.toString()+") values("+data.toString()+")");
+					//출력뿐만 아니라 StringBuffer에도 담아놔야 한다.
+					insertSql.append("insert into hospital("+cols.toString()+") values("+data.toString()+");");
 				}
+				
+				//모든게 끝났으니 편안한게 쓰레드에 일 시키자!!
+				//Runnable 인터페이스를 인수로 넣으면 Thread의 run을 수행하는 것이 아니라
+				//Runnable 인터페이스를 구현한 자의 run을 수행하는 것
+				//따라서 우리 것 수행 = this
+				thread = new Thread(this);
+				thread.start();
+				
 			} catch (FileNotFoundException e) {
 				e.printStackTrace();
 			} catch (IOException e) {
@@ -203,6 +283,7 @@ public class LoadMain extends JFrame implements ActionListener, TableModelListen
 			}
 		}	
 	}
+	
 	
 	//모든 레코드 가져오기 -> JTable에
 	public void getList() {
@@ -235,11 +316,10 @@ public class LoadMain extends JFrame implements ActionListener, TableModelListen
 				vec.add(rs.getString("regdate"));
 				vec.add(rs.getString("status"));
 				vec.add(rs.getString("dimension"));
-				vec.add(rs.getString("type"));	
+				vec.add(rs.getString("type"));
 				
 				list.add(vec);
 			}
-			
 		} catch (SQLException e) {
 			e.printStackTrace();
 		} finally {
@@ -265,8 +345,7 @@ public class LoadMain extends JFrame implements ActionListener, TableModelListen
 	public void getList() {
 		String sql = "select * from hospital order by sec asc";
 		PreparedStatement pstmt = null;
-		ResultSet rs = null;
-		
+		ResultSet rs = null;	
 		
 		try {
 			pstmt = con.prepareStatement(sql);
@@ -281,22 +360,39 @@ public class LoadMain extends JFrame implements ActionListener, TableModelListen
 				vec.add(rs.getString("status"));
 				vec.add(rs.getString("dimension"));
 				vec.add(rs.getString("type"));	
-
-				
 			}
-			
 		} catch (SQLException e) {
 			e.printStackTrace();
-		}
-		
-		
-
-		
+		}		
 	}*/
 	
 	// 선택한 레코드 삭제
 	public void delete() {
-		
+		//yes or no을 알려면 상수로 받아야 한다.
+		int ans = JOptionPane.showConfirmDialog(LoadMain.this, seq+ "삭제할래요?");
+		if(ans == JOptionPane.OK_OPTION) {
+			String sql = "delete from hospital where seq="+seq;
+			
+			PreparedStatement pstmt=null;
+			try {
+				pstmt = con.prepareStatement(sql);
+				int result = pstmt.executeUpdate();
+				if(result!=0) {
+					JOptionPane.showMessageDialog(this, "삭제완료");
+					table.updateUI();
+				}
+			} catch (SQLException e) {
+				e.printStackTrace();
+			} finally {
+				if(pstmt!=null) {
+					try {
+						pstmt.close();
+					} catch (SQLException e) {
+						e.printStackTrace();
+					}
+				}
+			}
+		}
 	}
 	
 	public void actionPerformed(ActionEvent e) {
@@ -319,10 +415,17 @@ public class LoadMain extends JFrame implements ActionListener, TableModelListen
 		//열기를 누르면 
 		//목적 파일에 스트림을 생성하자
 		if(result == JFileChooser.APPROVE_OPTION){
-			
+
 			File file = chooser.getSelectedFile(); //유저가 선택한 파일
-			t_path.setText(file.getAbsolutePath()); //선택파일 경로 뿌리기
+			String ext = FileUtil.getExt(file.getName());
 			
+			if(!ext.equals("csv")){
+				JOptionPane.showMessageDialog(this, "CSV만 선택하세요");
+				return; //더이상의 진행을 막는다
+			}
+				//csv선택 안하면 욕이 나오도록			
+				t_path.setText(file.getAbsolutePath()); //선택파일 경로 뿌리기
+				
 			try {
 				//user가 윈도우를 띄우고 동물병원 csv선택하고 ok 누르면
 				//파일과 연결이 되어있는 상태 = 빨때만 꽂고 흡입은 x
@@ -333,7 +436,7 @@ public class LoadMain extends JFrame implements ActionListener, TableModelListen
 
 			} catch (FileNotFoundException e) {
 				e.printStackTrace();
-			} 
+			}
 		}
 	}
 	
@@ -385,7 +488,7 @@ public class LoadMain extends JFrame implements ActionListener, TableModelListen
 				} else{
 					System.out.println("난제외");
 				}
-			} 
+			}
 			JOptionPane.showMessageDialog(this, "마이그레이션 완료!");
 			//JTable 나오게 처리!!
 			getList();
@@ -415,14 +518,82 @@ public class LoadMain extends JFrame implements ActionListener, TableModelListen
 	//테이블 모델의 데이터값에 변경이 발생하면
 	//그 찰나를 감지하는 리스너!!
 	public void tableChanged(TableModelEvent e) {
-		System.out.println("테이블 건들였어");
-		//MyModel에서 변경된 시점에서 호출또해줘야한다. 안그럼안됨,,
-		//this.fireTableDataChanged();
+		int row = table.getSelectedRow();
+		int col = table.getSelectedColumn();
+		
+		
+		
+		String column = (String)columnName.elementAt(col);
+		String value = (String)table.getValueAt(row, col);
+		String seq = (String)table.getValueAt(row, 0);
+		
+		System.out.println(row);
+		String sql = "update hospital set " + column +"='"+value+"'";
+		//내가 어디에 있든 맨 앞에 있는게 seq이다.
+		sql +=" where seq="+seq;
+		//엔터쳤을 때 알아맞춰야 한다. e써야한다.
+		//System.out.println(sql);
+		PreparedStatement pstmt=null;
+		
+		try {
+			pstmt = con.prepareStatement(sql);
+			int result = pstmt.executeUpdate();
+			if(result!=0) {
+				JOptionPane.showMessageDialog(this, "수정완료");
+			}
+		} catch (SQLException e1) {
+			e1.printStackTrace();
+		} finally {
+			if(pstmt!=null) {
+				try {
+					pstmt.close();
+				} catch (SQLException e1) {
+					e1.printStackTrace();
+				}				
+			}
+		}
+		
+	}
+	
+
+	public void run() {
+		//insertSql에 insert 문이 몇개있는지 알아보자!
+		String[] str = insertSql.toString().split(";");
+		System.out.println("insert문 수는"+str.length);
+		
+		PreparedStatement pstmt =null;
+		
+		for(int i =0; i<str.length; i++) {
+			//System.out.println(str[i]);	
+			try {
+				Thread.sleep(200);
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+			//try catch 끝나는 곳에 평소대로 insert문 날리면 된다.
+			//쿼리문마다 1대1 매칭되서 올라옴
+			try {
+				pstmt = con.prepareStatement(str[i]);
+				int result = pstmt.executeUpdate();
+			} catch (SQLException e) {
+				e.printStackTrace();
+			}
+		}
+		
+		//기존에 사용했던 StringBuffer 비우기
+		insertSql.delete(0, insertSql.length());
+		
+		if(pstmt!=null) {
+			try {
+				pstmt.close();
+			} catch (SQLException e) {
+				e.printStackTrace();
+			}			
+		}
+		//모든 INSERT가 종료되면 JTable UI갱신
 	}
 
 	public static void main(String[] args) {
 		new LoadMain();
 	}
-
-
 }
